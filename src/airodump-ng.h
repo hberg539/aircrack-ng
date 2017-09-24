@@ -356,6 +356,7 @@ struct globals
     FILE *f_cap;            /* output cap file      */
     FILE *f_ivs;            /* output ivs file      */
     FILE *f_xor;            /* output prga file     */
+    FILE *f_probe;          /* output probe file    */
 
     char * batt;            /* Battery string       */
     int channel[MAX_CARDS];           /* current channel #    */
@@ -474,6 +475,8 @@ struct globals
     int show_manufacturer;
     int show_uptime;
     int file_write_interval;
+    int write_probe;
+    char * probe_file;
     u_int maxsize_wps_seen;
     int show_wps;
 }

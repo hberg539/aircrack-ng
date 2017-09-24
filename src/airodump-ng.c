@@ -666,6 +666,7 @@ char usage[] =
 "                              pcap, ivs, csv, gps, kismet, netxml\n"
 "      --ignore-negative-one : Removes the message that says\n"
 "                              fixed channel <interface>: -1\n"
+"      --write-probe <file>  : Write probe requests into file\n"
 "      --write-interval\n"
 "                  <seconds> : Output file(s) write interval in seconds\n"
 "\n"
@@ -882,6 +883,7 @@ int dump_initialize( char *prefix, int ivs_only )
 			return( 1 );
 		}
 	}
+
 
     /* create the output Kismet CSV file */
 	if (G.output_format_kismet_csv) {
@@ -1238,6 +1240,8 @@ int dump_add_packet( unsigned char *h80211, int caplen, struct rx_info *ri, int 
     unsigned char clear[2048];
     int weight[16];
     int num_xor=0;
+    int probe_ssid_index = -1;
+    struct tm * probe_time;
 
     struct AP_info *ap_cur = NULL;
     struct ST_info *st_cur = NULL;
@@ -1607,6 +1611,7 @@ int dump_add_packet( unsigned char *h80211, int caplen, struct rx_info *ri, int 
 
     st_cur->nb_pkt++;
 
+
 skip_station:
 
     /* packet parsing: Probe Request */
@@ -1634,13 +1639,19 @@ skip_station:
                    already in the ring buffer */
 
                 for( i = 0; i < NB_PRB; i++ )
+                {
                     if( memcmp( st_cur->probes[i], p + 2, n ) == 0 )
+                    {
+                        probe_ssid_index = i;
                         goto skip_probe;
+                    }
+                }
 
                 st_cur->probe_index = ( st_cur->probe_index + 1 ) % NB_PRB;
                 memset( st_cur->probes[st_cur->probe_index], 0, 256 );
                 memcpy( st_cur->probes[st_cur->probe_index], p + 2, n ); //twice?!
                 st_cur->ssid_length[st_cur->probe_index] = n;
+                probe_ssid_index = st_cur->probe_index;
 
                 for( i = 0; i < n; i++ )
                 {
@@ -1654,7 +1665,35 @@ skip_station:
         }
     }
 
+
 skip_probe:
+
+    /* Write probe request into file */
+    if (G.write_probe && G.f_probe != NULL && st_cur != NULL)
+    {
+        /*probe_time = localtime( &st_cur->tlast );
+
+        fprintf( G.f_probe, "%04d-%02d-%02d %02d:%02d:%02d;",
+                 1900 + probe_time->tm_year, 1 + probe_time->tm_mon,
+                 probe_time->tm_mday, probe_time->tm_hour,
+                 probe_time->tm_min,  probe_time->tm_sec );
+        */
+
+        fprintf(G.f_probe, "%02X:%02X:%02X:%02X:%02X:%02X;",
+                            st_cur->stmac[0], st_cur->stmac[1], st_cur->stmac[2],
+                            st_cur->stmac[3], st_cur->stmac[4], st_cur->stmac[5]);
+        fprintf(G.f_probe, "%d;", st_cur->power); 
+        fprintf(G.f_probe, "%d;", st_cur->channel);
+        fprintf(G.f_probe, "%d;", st_cur->lastseq);
+
+        if (probe_ssid_index != -1)
+        {
+            fprintf(G.f_probe, "%.*s;", st_cur->ssid_length[probe_ssid_index], st_cur->probes[probe_ssid_index]);
+        }
+
+        fprintf(G.f_probe, "\n");
+        fflush(G.f_probe);
+    }
 
     /* packet parsing: Beacon or Probe Response */
 
@@ -6171,6 +6210,7 @@ int main( int argc, char *argv[] )
         {"ignore-negative-one", 0, &G.ignore_negative_one, 1},
         {"manufacturer",  0, 0, 'M'},
         {"uptime",   0, 0, 'U'},
+        {"write-probe", 1, 0, 'P'},
         {"write-interval", 1, 0, 'I'},
         {"wps",  0, 0, 'W'},
         {0,          0, 0,  0 }
@@ -6224,6 +6264,7 @@ int main( int argc, char *argv[] )
     G.f_kis        =  NULL;
     G.f_kis_xml    =  NULL;
     G.f_gps        =  NULL;
+    G.f_probe      =  NULL;
     G.keyout       =  NULL;
     G.f_xor        =  NULL;
     G.sk_len       =  0;
@@ -6744,6 +6785,17 @@ int main( int argc, char *argv[] )
                     G.active_scan_sim = 0;
                 break;
 
+            case 'P':
+
+                if (G.probe_file != NULL) {
+                    printf( "Notice: dump prefix already given\n" );
+                    break;
+                }
+                /* Write prefix */
+                G.probe_file   = optarg;
+                G.write_probe = 1;
+                break;
+
             default : goto usage;
         }
     } while ( 1 );
@@ -6955,6 +7007,18 @@ usage:
         }
     }
 
+    /* Create file handle for probe file */
+    if (G.write_probe)
+    {
+        if ( (G.f_probe = fopen( G.probe_file, "wb+" ) ) == NULL)
+        {
+            perror( "fopen failed" );
+            fprintf( stderr, "Could not create \"%s\".\n", G.probe_file );
+            return( 1 );
+        }
+        fprintf(stdout, "Probe file %s opened", G.probe_file);
+    }
+
     /* open or create the output files */
 
     if (G.record_data)
@@ -7035,9 +7099,9 @@ usage:
             /* update the text output files */
 
             tt1 = time( NULL );
-            if (G. output_format_csv)  dump_write_csv();
-            if (G.output_format_kismet_csv) dump_write_kismet_csv();
-            if (G.output_format_kismet_netxml) dump_write_kismet_netxml();
+            if (G.output_format_csv)            dump_write_csv();
+            if (G.output_format_kismet_csv)     dump_write_kismet_csv();
+            if (G.output_format_kismet_netxml)  dump_write_kismet_netxml();
         }
 
         if( time( NULL ) - tt2 > 5 )
@@ -7355,8 +7419,10 @@ usage:
     for(i=0; i<G.num_cards; i++)
         wi_close(wi[i]);
 
+    if ( G.write_probe || G.f_probe != NULL ) fclose( G.f_probe );
+
     if (G.record_data) {
-        if ( G. output_format_csv)  dump_write_csv();
+        if ( G.output_format_csv)  dump_write_csv();
         if ( G.output_format_kismet_csv) dump_write_kismet_csv();
         if ( G.output_format_kismet_netxml) dump_write_kismet_netxml();
 
